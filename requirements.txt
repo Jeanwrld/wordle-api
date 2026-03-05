@@ -1,6 +1,6 @@
 fastapi
 uvicorn
---extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.2.0+cpu
 huggingface_hub
 numpy
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.10.0+cpu
