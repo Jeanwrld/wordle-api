@@ -1,21 +1,33 @@
-app_code = '''import json, math, torch, gradio as gr
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import json, math, torch, numpy as np
 from collections import Counter
-import numpy as np
-from huggingface_hub import hf_hub_download
+from typing import Optional
 import torch.nn as nn
+from huggingface_hub import hf_hub_download
 
-REPO_ID = "sato2ru/wordle-solver"
 HF_REPO_ID = "sato2ru/wordle-solver"
-config  = json.load(open(hf_hub_download(REPO_ID, "config.json")))
-ANSWERS = json.load(open(hf_hub_download(REPO_ID, "answers.json")))
-ALLOWED = json.load(open(hf_hub_download(REPO_ID, "allowed.json")))
+
+app = FastAPI(title="Wordle Solver API")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+print("Loading model...")
+config  = json.load(open(hf_hub_download(HF_REPO_ID, "config.json")))
+ANSWERS = json.load(open(hf_hub_download(HF_REPO_ID, "answers.json")))
+ALLOWED = json.load(open(hf_hub_download(HF_REPO_ID, "allowed.json")))
 WORD2IDX = {w: i for i, w in enumerate(ALLOWED)}
 LETTERS  = "abcdefghijklmnopqrstuvwxyz"
 L2I = {c: i for i, c in enumerate(LETTERS)}
 INPUT_DIM  = config["input_dim"]
 OUTPUT_DIM = config["output_dim"]
 OPENING    = config["opening_guess"]
-WIN_PATTERN = (2,2,2,2,2)
+WIN_PATTERN = (2, 2, 2, 2, 2)
 
 class WordleNet(nn.Module):
     def __init__(self):
@@ -30,8 +42,11 @@ class WordleNet(nn.Module):
     def forward(self, x): return self.net(x)
 
 model = WordleNet()
-model.load_state_dict(torch.load(hf_hub_download(REPO_ID, "model_weights.pt"), map_location="cpu"))
+model.load_state_dict(
+    torch.load(hf_hub_download(HF_REPO_ID, "model_weights.pt"), map_location="cpu")
+)
 model.eval()
+print("Model loaded")
 
 def get_pattern(guess, answer):
     pattern = [0]*5
@@ -47,7 +62,7 @@ def get_pattern(guess, answer):
     return tuple(pattern)
 
 def filter_words(words, guess, pattern):
-    return [w for w in words if get_pattern(guess, w) == pattern]
+    return [w for w in words if get_pattern(guess, w) == tuple(pattern)]
 
 def entropy_score(guess, possible):
     buckets = Counter(get_pattern(guess, w) for w in possible)
@@ -62,87 +77,86 @@ def encode_board(history):
     return vec
 
 def model_suggest(history, possible):
-    if len(possible) == 1:
-        return possible[0]
-    if not history:
-        return OPENING
+    if not possible:       return None
+    if len(possible) == 1: return possible[0]
+    if not history:        return OPENING
     state = torch.tensor(encode_board(history)).unsqueeze(0)
     with torch.no_grad():
         logits = model(state)[0]
     top5 = [ALLOWED[i] for i in logits.topk(5).indices.tolist()]
     return max(top5, key=lambda w: entropy_score(w, possible))
 
-def render_board(history):
-    colours = {0: "⬜", 1: "🟨", 2: "🟩"}
-    rows = []
-    for word, pattern in history:
-        tiles = "  ".join(colours[s] + c.upper() for c, s in zip(word, pattern))
-        rows.append(tiles)
-    return "\\n".join(rows) if rows else "(no guesses yet)"
+def top_suggestions(history, possible, n=5):
+    if not possible: return []
+    if not history:
+        candidates = [OPENING] + [w for w in ALLOWED if w != OPENING][:20]
+    else:
+        state = torch.tensor(encode_board(history)).unsqueeze(0)
+        with torch.no_grad():
+            logits = model(state)[0]
+        candidates = [ALLOWED[i] for i in logits.topk(20).indices.tolist()]
+    possible_set = set(possible)
+    scored = [{"word": w, "entropy": round(entropy_score(w, possible), 3), "is_possible": w in possible_set} for w in candidates]
+    scored.sort(key=lambda x: (-x["entropy"], not x["is_possible"]))
+    return scored[:n]
 
-def process_guess(guess_input, pattern_input, state):
-    if state["done"]:
-        return render_board(state["history"]), "Game over — press Reset", state
+class GuessEntry(BaseModel):
+    word: str
+    pattern: list[int]
 
-    guess = guess_input.strip().lower()
-    if len(guess) != 5:
-        return render_board(state["history"]), "Word must be 5 letters", state
-    if len(pattern_input) != 5 or not all(c in "012" for c in pattern_input):
-        return render_board(state["history"]), "Pattern must be 5 digits (0/1/2)", state
+class SuggestRequest(BaseModel):
+    history: list[GuessEntry] = []
 
-    pattern = tuple(int(c) for c in pattern_input)
-    state["history"].append((guess, pattern))
+class SuggestResponse(BaseModel):
+    suggestion: str
+    top_suggestions: list[dict]
+    possible_count: int
+    bits_remaining: float
+    solved: bool
+    message: str
 
-    if pattern == WIN_PATTERN:
-        state["done"] = True
-        turns = len(state["history"])
-        return render_board(state["history"]), f"Solved in {turns} turns!", state
+@app.get("/")
+def root():
+    return {"status": "ok", "opener": OPENING}
 
-    state["possible"] = filter_words(state["possible"], guess, pattern)
+@app.post("/suggest", response_model=SuggestResponse)
+def suggest(req: SuggestRequest):
+    possible = list(ANSWERS)
+    for entry in req.history:
+        word    = entry.word.lower().strip()
+        pattern = tuple(entry.pattern)
+        if len(word) != 5:
+            raise HTTPException(400, f"Word must be 5 letters: {word}")
+        if len(pattern) != 5 or not all(p in (0,1,2) for p in pattern):
+            raise HTTPException(400, "Pattern must be 5 values of 0, 1, or 2")
+        if pattern == WIN_PATTERN:
+            return SuggestResponse(
+                suggestion=word, top_suggestions=[], possible_count=1,
+                bits_remaining=0.0, solved=True,
+                message=f"Solved in {len(req.history)} guesses!"
+            )
+        possible = filter_words(possible, word, pattern)
 
-    if not state["possible"]:
-        state["done"] = True
-        return render_board(state["history"]), "No words left. Check your input.", state
+    if not possible:
+        raise HTTPException(422, "No possible words remaining.")
 
-    suggestion = model_suggest(state["history"], state["possible"])
-    remaining = len(state["possible"])
-    msg = f"Try: {suggestion.upper()}  |  {remaining} words remaining"
-    return render_board(state["history"]), msg, state
+    history_tuples = [(e.word.lower(), tuple(e.pattern)) for e in req.history]
+    suggestion     = model_suggest(history_tuples, possible)
+    top_suggs      = top_suggestions(history_tuples, possible)
+    bits           = math.log2(len(possible)) if len(possible) > 1 else 0.0
 
-def reset_game(state):
-    new_state = {"possible": list(ANSWERS), "history": [], "done": False}
-    return render_board([]), f"Try: {OPENING.upper()} to start", new_state
+    return SuggestResponse(
+        suggestion=suggestion,
+        top_suggestions=top_suggs,
+        possible_count=len(possible),
+        bits_remaining=round(bits, 2),
+        solved=False,
+        message=f"{len(possible)} words remaining — try {suggestion.upper()}"
+    )
 
-def init_state():
-    return {"possible": list(ANSWERS), "history": [], "done": False}
-
-with gr.Blocks(title="Wordle Solver", theme=gr.themes.Monochrome()) as demo:
-    gr.Markdown("# Wordle Solver")
-    gr.Markdown("Enter each guess and the colour pattern. **0** = grey  **1** = yellow  **2** = green")
-
-    state    = gr.State(init_state())
-    board    = gr.Textbox(label="Board", lines=8, interactive=False)
-    message  = gr.Markdown(f"Try: **{OPENING.upper()}** to start")
-
-    with gr.Row():
-        guess_box   = gr.Textbox(label="Your guess", placeholder="crane", max_lines=1)
-        pattern_box = gr.Textbox(label="Pattern", placeholder="00000", max_lines=1)
-
-    with gr.Row():
-        submit_btn = gr.Button("Submit", variant="primary")
-        reset_btn  = gr.Button("Reset")
-
-    submit_btn.click(process_guess, [guess_box, pattern_box, state], [board, message, state])
-    reset_btn.click(reset_game, [state], [board, message, state])
-
-demo.launch()
-'''
-
-with open('app.py', 'w') as f:
-    f.write(app_code)
-
-with open('requirements.txt', 'w') as f:
-    f.write('torch\ngradio\nhuggingface_hub\nnumpy\n')
+@app.get("/opener")
+def get_opener():
+    return {"word": OPENING}
 
 if __name__ == "__main__":
     import uvicorn
