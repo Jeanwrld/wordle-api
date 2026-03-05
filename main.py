@@ -144,7 +144,6 @@ with open('app.py', 'w') as f:
 with open('requirements.txt', 'w') as f:
     f.write('torch\ngradio\nhuggingface_hub\nnumpy\n')
 
-api.upload_file(path_or_fileobj='app.py',          path_in_repo='app.py',          repo_id='sato2ru/wordle', repo_type='space')
-api.upload_file(path_or_fileobj='requirements.txt', path_in_repo='requirements.txt', repo_id='sato2ru/wordle', repo_type='space')
-
-print("Uploaded! Check https://huggingface.co/spaces/sato2ru/wordle")
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
