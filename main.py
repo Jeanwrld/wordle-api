@@ -79,20 +79,19 @@ def encode_board(history):
     return vec
 
 def is_consistent(word, history):
-    """
-    Return True if `word` does not violate any constraint established
-    by the guess history.  history is a list of (word_str, pattern_tuple).
-    """
     for guess, pattern in history:
+        # Collect green letters in this guess
+        green_letters = {letter for letter, state in zip(guess, pattern) if state == 2}
+        
         for pos, (letter, state) in enumerate(zip(guess, pattern)):
-            if state == 2:                          # green: exact match required
+            if state == 2:
                 if word[pos] != letter:
                     return False
-            elif state == 1:                        # yellow: present but not here
+            elif state == 1:
                 if letter not in word or word[pos] == letter:
                     return False
-            else:                                   # grey: absent (unless also green elsewhere)
-                green_letters = {g for g, s in zip(guess, pattern) if s == 2}
+            else:  # grey
+                # Only exclude if this letter isn't green somewhere in THIS guess
                 if letter not in green_letters and letter in word:
                     return False
     return True
@@ -130,10 +129,13 @@ def model_suggest(history, possible):
             if score > best_score:
                 best_score, best_word = score, g
 
-        # Fall back to best possible answer if elimination search failed
+        
+        # Fall back to any remaining possible word
         if best_word is None:
             candidates = [w for w in possible if w not in already_guessed]
-            best_word = max(candidates, key=lambda w: entropy_score(w, possible)) if candidates else possible[0]
+            if not candidates:
+                candidates = possible
+            best_word = max(candidates, key=lambda w: entropy_score(w, possible))
 
         return best_word
 
