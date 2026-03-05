@@ -80,6 +80,34 @@ def model_suggest(history, possible):
     if not possible:       return None
     if len(possible) == 1: return possible[0]
     if not history:        return OPENING
+
+    # ── Late-game elimination mode ────────────────────────────────
+    # When few words remain, find a guess that eliminates the most
+    # candidates by targeting ambiguous letters at ambiguous positions
+    if len(possible) <= 6:
+        # Find positions where letters still vary
+        ambiguous_letters = set()
+        for pos in range(5):
+            letters_at_pos = set(w[pos] for w in possible)
+            if len(letters_at_pos) > 1:
+                ambiguous_letters.update(letters_at_pos)
+
+        # Find a guess (from all allowed words) that covers the most
+        # ambiguous letters in one go
+        best_elim, best_score = None, -1
+        for g in ALLOWED:
+            if g in possible and len(possible) > 2:
+                continue  # don't guess a possible answer unless only 1-2 left
+            score = len(set(g) & ambiguous_letters)
+            h = entropy_score(g, possible)
+            combined = score * 2 + h  # weight elimination + entropy
+            if combined > best_score:
+                best_score, best_elim = combined, g
+
+        if best_elim:
+            return best_elim
+
+    # ── Normal model inference ────────────────────────────────────
     state = torch.tensor(encode_board(history)).unsqueeze(0)
     with torch.no_grad():
         logits = model(state)[0]
