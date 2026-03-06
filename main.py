@@ -85,7 +85,19 @@ def model_suggest(history, possible):
     with torch.no_grad():
         logits = model(state)[0]
     model_words = [ALLOWED[i] for i in logits.topk(20).indices.tolist()]
-    # Merge model candidates with possible set, exclude already-guessed words
+
+    # Endgame: minimax when few candidates remain
+    if len(possible) <= 6:
+        best, best_worst = None, float('inf')
+        for g in list(possible) + model_words:
+            if g in guessed:
+                continue
+            worst = max(Counter(get_pattern(g, w) for w in possible).values())
+            if worst < best_worst:
+                best_worst, best = worst, g
+        return best
+
+    # Normal: merge candidates, score by entropy
     candidates = list(dict.fromkeys(model_words + list(possible)))
     candidates = [w for w in candidates if w not in guessed]
     if not candidates:
