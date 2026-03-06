@@ -86,7 +86,7 @@ def model_suggest(history, possible):
         logits = model(state)[0]
     model_words = [ALLOWED[i] for i in logits.topk(20).indices.tolist()]
     # Merge model candidates with possible set, exclude already-guessed words
-    candidates = list(dict.fromkeys(model_words + list(possible)))[:20]
+    candidates = list(dict.fromkeys(model_words + list(possible)))
     candidates = [w for w in candidates if w not in guessed]
     if not candidates:
         return possible[0]
@@ -103,7 +103,7 @@ def top_suggestions(history, possible, n=5):
             logits = model(state)[0]
         model_words = [ALLOWED[i] for i in logits.topk(20).indices.tolist()]
         # Merge model output with the constraint-filtered possible set
-        candidates = list(dict.fromkeys(model_words + list(possible)))[:20]
+        candidates = list(dict.fromkeys(model_words + list(possible)))
     # Only show valid possible answers, exclude already-guessed words
     possible_set = set(possible)
     candidates = [w for w in candidates if w in possible_set and w not in guessed]
