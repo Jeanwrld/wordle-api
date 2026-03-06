@@ -80,24 +80,35 @@ def model_suggest(history, possible):
     if not possible:       return None
     if len(possible) == 1: return possible[0]
     if not history:        return OPENING
+    guessed = {w for w, _ in history}
     state = torch.tensor(encode_board(history)).unsqueeze(0)
     with torch.no_grad():
         logits = model(state)[0]
-    top5 = [ALLOWED[i] for i in logits.topk(5).indices.tolist()]
-    return max(top5, key=lambda w: entropy_score(w, possible))
+    model_words = [ALLOWED[i] for i in logits.topk(20).indices.tolist()]
+    # Merge model candidates with possible set, exclude already-guessed words
+    candidates = list(dict.fromkeys(model_words + list(possible)))[:20]
+    candidates = [w for w in candidates if w not in guessed]
+    if not candidates:
+        return possible[0]
+    return max(candidates, key=lambda w: entropy_score(w, possible))
 
 def top_suggestions(history, possible, n=5):
     if not possible: return []
+    guessed = {w for w, _ in history}
     if not history:
         candidates = [OPENING] + [w for w in ALLOWED if w != OPENING][:20]
     else:
         state = torch.tensor(encode_board(history)).unsqueeze(0)
         with torch.no_grad():
             logits = model(state)[0]
-        candidates = [ALLOWED[i] for i in logits.topk(20).indices.tolist()]
+        model_words = [ALLOWED[i] for i in logits.topk(20).indices.tolist()]
+        # Merge model output with the constraint-filtered possible set
+        candidates = list(dict.fromkeys(model_words + list(possible)))[:20]
+    # Only show valid possible answers, exclude already-guessed words
     possible_set = set(possible)
-    scored = [{"word": w, "entropy": round(entropy_score(w, possible), 3), "is_possible": w in possible_set} for w in candidates]
-    scored.sort(key=lambda x: (-x["entropy"], not x["is_possible"]))
+    candidates = [w for w in candidates if w in possible_set and w not in guessed]
+    scored = [{"word": w, "entropy": round(entropy_score(w, possible), 3), "is_possible": True} for w in candidates]
+    scored.sort(key=lambda x: -x["entropy"])
     return scored[:n]
 
 class GuessEntry(BaseModel):
